@@ -747,14 +747,17 @@ def live_chart(symbol):
 <title>CRT Live Chart</title>
 <script src="https://unpkg.com/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
 <style>
-body{margin:0;background:#101820;color:#e8edf2;font:14px Arial}
-header{padding:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-select{background:#263746;color:white;border:1px solid #52616b;padding:8px;border-radius:6px}
-#chart{height:78vh;min-height:420px;width:100%}
-#meta{padding:8px 12px;color:#aab7c4}
+:root{color-scheme:dark;--bg:#080d16;--panel:#111a29;--line:#223047;--muted:#8291a8;--text:#e8eef8;--green:#16c784;--red:#ea5b70;--blue:#6d9eff}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 50% -20%,#1b2d48 0,#080d16 55%);color:var(--text);font:14px Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Arial}
+.shell{max-width:1440px;margin:auto;padding:20px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.brand{display:flex;align-items:center;gap:12px}.mark{width:38px;height:38px;border-radius:12px;background:linear-gradient(145deg,#4b83ff,#7c4dff);display:grid;place-items:center;font-weight:900;box-shadow:0 8px 30px #4b83ff44}.eyebrow{font-size:10px;letter-spacing:2px;color:var(--muted);font-weight:800}.brand h1{font-size:16px;margin:3px 0 0;letter-spacing:.5px}.live{display:flex;align-items:center;gap:8px;color:#9fb2c9;font-size:12px}.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 12px #16c784}
+.card{background:linear-gradient(180deg,#121d2d,#0e1725);border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:0 20px 70px #0006}.toolbar{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:18px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}.instrument{display:flex;align-items:center;gap:12px}.coin{width:42px;height:42px;border-radius:13px;background:#20304a;display:grid;place-items:center;color:#9fc0ff;font-weight:900;font-size:18px}.symbol{font-size:18px;font-weight:800;letter-spacing:.4px}.sub{font-size:11px;color:var(--muted);margin-top:4px}.controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.select,.tf button{background:#172438;border:1px solid #2a3b55;color:#b9c8dc;border-radius:9px;padding:9px 12px;font-weight:700;font-size:12px}.tf{display:flex;gap:5px;background:#0a1220;padding:4px;border-radius:11px}.tf button{border:0;background:transparent;padding:8px 12px}.tf button.active{background:#2b4772;color:#fff;box-shadow:0 3px 12px #0004}
+.stats{display:flex;gap:28px;align-items:center;padding:14px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}.stat label{display:block;color:var(--muted);font-size:10px;letter-spacing:1px;text-transform:uppercase;margin-bottom:5px}.stat strong{font-size:15px;font-variant-numeric:tabular-nums}.positive{color:var(--green)}.negative{color:var(--red)}.stage{margin-left:auto;padding:7px 11px;border-radius:8px;background:#17283b;color:#9fc0ff;font-size:11px;font-weight:800}.chart-wrap{padding:10px 10px 0}#chart{height:66vh;min-height:440px;width:100%}.footer{display:flex;justify-content:space-between;gap:12px;padding:12px 20px;color:var(--muted);font-size:11px;border-top:1px solid var(--line);flex-wrap:wrap}.foot-brand{color:#a9bbd2;font-weight:700}
+@media(max-width:650px){.shell{padding:10px}.top{margin-bottom:12px}.toolbar{padding:14px}.stats{gap:16px;padding:12px 14px}.stage{margin-left:0}#chart{height:64vh;min-height:380px}.controls{width:100%}.select{flex:1}}
 </style></head><body>
-<header><b>SYMBOL_PLACEHOLDER</b><select id="tf"><option value="4h">4H</option><option value="15m">15M</option></select><span id="stage"></span></header>
-<div id="chart"></div><div id="meta">Connecting to Delta Exchange…</div>
+<div class="shell"><div class="top"><div class="brand"><div class="mark">C</div><div><div class="eyebrow">CRT TERMINAL</div><h1>DELTA FUTURES · MARKET MONITOR</h1></div></div><div class="live"><span class="dot"></span> LIVE DATA</div></div>
+<div class="card"><div class="toolbar"><div class="instrument"><div class="coin">◇</div><div><div class="symbol">SYMBOL_PLACEHOLDER</div><div class="sub">Delta Exchange India · Perpetual Futures</div></div></div><div class="controls"><select class="select" id="tf"><option value="4h">4H · HTF</option><option value="15m">15M · LTF</option></select><div class="tf"><button data-tf="4h">4H</button><button data-tf="15m">15M</button></div></div></div>
+<div class="stats"><div class="stat"><label>Last price</label><strong id="lastPrice">—</strong></div><div class="stat"><label>Last candle</label><strong id="candleTime">—</strong></div><div class="stat"><label>Feed status</label><strong id="feed" class="positive">Connecting</strong></div><div class="stage" id="stage">CRT · NO ACTIVE SETUP</div></div>
+<div class="chart-wrap"><div id="chart"></div></div><div class="footer"><span id="meta">Connecting to Delta Exchange…</span><span class="foot-brand">CRT TERMINAL / ALERTS ONLY</span></div></div></div>
 <script>
 const symbol="SYMBOL_PLACEHOLDER";
 const params=new URLSearchParams(location.search);const tf=document.getElementById('tf');
@@ -765,7 +768,7 @@ const chart=LightweightCharts.createChart(document.getElementById('chart'),{
  rightPriceScale:{borderColor:'#52616b'},timeScale:{borderColor:'#52616b',timeVisible:true,secondsVisible:false},
  crosshair:{mode:LightweightCharts.CrosshairMode.Normal}
 });
-const candles=chart.addCandlestickSeries({upColor:'#20c997',downColor:'#ff647c',borderUpColor:'#20c997',borderDownColor:'#ff647c',wickUpColor:'#20c997',wickDownColor:'#ff647c'});
+const candles=chart.addCandlestickSeries({upColor:'#16c784',downColor:'#ea5b70',borderUpColor:'#16c784',borderDownColor:'#ea5b70',wickUpColor:'#16c784',wickDownColor:'#ea5b70',priceLineVisible:true,lastValueVisible:true});
 let lines=[];
 async function refresh(){
  try{
@@ -774,13 +777,19 @@ async function refresh(){
   candles.setData(d.candles);
   lines.forEach(x=>candles.removePriceLine(x));lines=[];
   (d.lines||[]).forEach(x=>lines.push(candles.createPriceLine({price:x.price,color:x.color,lineWidth:2,lineStyle:2,axisLabelVisible:true,title:x.title})));
-  document.getElementById('stage').textContent='CRT: '+d.stage;
-  document.getElementById('meta').textContent='Delta Exchange · Updated '+new Date(d.updated).toLocaleTimeString()+' · Auto-refresh 15 sec';
- }catch(e){document.getElementById('meta').textContent='Update error: '+e.message}
+  const last=d.candles[d.candles.length-1];
+  document.getElementById('stage').textContent='CRT · '+String(d.stage).replaceAll('_',' ').toUpperCase();
+  document.getElementById('feed').textContent='CONNECTED';document.getElementById('feed').className='positive';
+  document.getElementById('lastPrice').textContent=last?last.close.toLocaleString(undefined,{maximumFractionDigits:4}):'—';
+  document.getElementById('candleTime').textContent=last?new Date(last.time*1000).toLocaleString():'—';
+  document.getElementById('meta').textContent='Delta Exchange · Updated '+new Date(d.updated).toLocaleTimeString()+' · Refreshes every 15 seconds';
+ }catch(e){document.getElementById('feed').textContent='OFFLINE';document.getElementById('feed').className='negative';document.getElementById('meta').textContent='Data update error: '+e.message}
 }
-tf.addEventListener('change',()=>{const u=new URL(location.href);u.searchParams.set('tf',tf.value);history.replaceState({},'',u);refresh()});
+function setTf(value){tf.value=value;document.querySelectorAll('[data-tf]').forEach(b=>b.classList.toggle('active',b.dataset.tf===value));const u=new URL(location.href);u.searchParams.set('tf',value);history.replaceState({},'',u);refresh()}
+document.querySelectorAll('[data-tf]').forEach(b=>b.addEventListener('click',()=>setTf(b.dataset.tf)));
+tf.addEventListener('change',()=>setTf(tf.value));
 new ResizeObserver(entries=>chart.applyOptions({width:entries[0].contentRect.width})).observe(document.getElementById('chart'));
-refresh();setInterval(refresh,15000);
+setTf(tf.value);setInterval(refresh,15000);
 </script></body></html>"""
     return page.replace("SYMBOL_PLACEHOLDER", symbol)
 
