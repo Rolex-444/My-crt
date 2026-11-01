@@ -638,6 +638,22 @@ def scan_symbol(symbol, h4, m15, h4_map):
         state["last_price"] = price
 
 
+
+def send_live_chart_links():
+    if not APP_BASE_URL:
+        return
+    now = int(time.time())
+    last = int(STATE.get("last_live_links", 0) or 0)
+    if now - last < LIVE_LINK_INTERVAL:
+        return
+    links = "\\n".join(
+        f"📈 {symbol}: {APP_BASE_URL}/chart/{symbol}?tf=4h" for symbol in SYMBOLS
+    )
+    if telegram("🔴 LIVE CHARTS — updated automatically every 15 minutes\\n" + links):
+        STATE["last_live_links"] = now
+        save_state()
+
+
 def cycle():
     h4_map = {}
     m15_map = {}
@@ -649,6 +665,7 @@ def cycle():
     STATE["last_cycle"] = datetime.now(timezone.utc).isoformat()
     STATE["errors"] = []
     save_state()
+    send_live_chart_links()
 
 
 def worker():
