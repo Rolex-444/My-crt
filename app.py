@@ -431,6 +431,9 @@ def largest_body_crt_candidate(h4):
 
 def scan_symbol(symbol, h4, m15, h4_map):
     state = STATE["setups"].get(symbol)
+    # Migrate older saved setup records that predate staged CRT tracking.
+    if state and not state.get("crt_time"):
+        state["stage"] = "invalidated"
 
     # Stage 1: identify a new, exceptionally large CRT candle.
     candidate = largest_body_crt_candidate(h4)
