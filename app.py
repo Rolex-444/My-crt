@@ -86,23 +86,23 @@ def handle_command(message):
     command = text_value.split()[0].split("@")[0].lower()
 
     if command == "/start":
-        reply = ("Welcome to your CRT alert bot!\\n\\n"
-                 "I monitor Delta Exchange futures and send CRT / Model #1 alerts.\\n"
-                 "Alert-only mode: no orders are placed.\\n\\n"
+        reply = ("Welcome to your CRT alert bot!\n\n"
+                 "I monitor Delta Exchange futures and send CRT / Model #1 alerts.\n"
+                 "Alert-only mode: no orders are placed.\n\n"
                  "Use /status, /signals, or /help.")
     elif command == "/help":
-        reply = ("/start — Welcome message\\n"
-                 "/status — Bot health and monitored symbols\\n"
-                 "/signals — Current setup stages\\n"
+        reply = ("/start — Welcome message\n"
+                 "/status — Bot health and monitored symbols\n"
+                 "/signals — Current setup stages\n"
                  "/help — Show this help")
     elif command == "/status":
         last_cycle = STATE.get("last_cycle") or "Not completed yet"
         errors = STATE.get("errors") or []
-        reply = ("CRT bot status: RUNNING\\n"
-                 f"Symbols: {', '.join(SYMBOLS)}\\n"
-                 f"Scan interval: {POLL} seconds\\n"
-                 f"Last scan (UTC): {last_cycle}\\n"
-                 f"Last scan errors: {'; '.join(errors) if errors else 'None'}\\n"
+        reply = ("CRT bot status: RUNNING\n"
+                 f"Symbols: {', '.join(SYMBOLS)}\n"
+                 f"Scan interval: {POLL} seconds\n"
+                 f"Last scan (UTC): {last_cycle}\n"
+                 f"Last scan errors: {'; '.join(errors) if errors else 'None'}\n"
                  "Mode: alerts only; no automatic trading.")
     elif command == "/signals":
         setups = STATE.get("setups", {})
@@ -111,7 +111,7 @@ def handle_command(message):
             stage = item.get("stage", "unknown")
             if stage != "completed":
                 active.append(f"{symbol}: {item.get('side', '?')} — {stage}")
-        reply = "Current CRT setups:\\n" + ("\\n".join(active) if active else "No active setups currently.")
+        reply = "Current CRT setups:\n" + ("\n".join(active) if active else "No active setups currently.")
     else:
         return
     telegram_command_reply(chat_id, reply)
