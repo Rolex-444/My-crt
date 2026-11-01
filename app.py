@@ -4,6 +4,8 @@ from pathlib import Path
 
 import requests
 from flask import Flask, jsonify
+from PIL import Image, ImageDraw
+from io import BytesIO
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("crt-bot")
@@ -57,6 +59,91 @@ def telegram(message):
         return True
     except Exception as exc:
         log.error("Telegram send failed: %s", exc)
+        return False
+
+
+
+def chart_image(data, title, candle_marks=None, levels=None, zones=None):
+    """Render the latest 30 completed candles as an annotated PNG."""
+    data = data[-30:]
+    if not data:
+        return None
+    width, height = 1100, 650
+    left, right, top, bottom = 90, 1030, 90, 555
+    image = Image.new("RGB", (width, height), "#101820")
+    draw = ImageDraw.Draw(image)
+    draw.text((left, 25), title, fill="#FFFFFF")
+    draw.text((left, 55), "Delta Exchange | Latest 30 completed candles", fill="#AAB7C4")
+
+    lo = min(c["low"] for c in data)
+    hi = max(c["high"] for c in data)
+    pad = max((hi - lo) * 0.12, abs(hi) * 0.0005, 0.000001)
+    lo, hi = lo - pad, hi + pad
+
+    def y(price):
+        return int(bottom - (price - lo) / (hi - lo) * (bottom - top))
+
+    step = (right - left) / len(data)
+    body_w = max(5, int(step * 0.55))
+
+    for zone in zones or []:
+        zlo, zhi = sorted((float(zone["low"]), float(zone["high"])))
+        if zhi < lo or zlo > hi:
+            continue
+        y1, y2 = y(min(zhi, hi)), y(max(zlo, lo))
+        draw.rectangle((left, y1, right, y2), fill="#263746", outline="#D6A84F")
+        draw.text((right - 190, max(top, y1 + 2)), zone["label"], fill="#F4C76B")
+
+    marks = {int(m["time"]): m["label"] for m in (candle_marks or [])}
+    for i, candle in enumerate(data):
+        x = int(left + (i + 0.5) * step)
+        color = "#20C997" if candle["close"] >= candle["open"] else "#FF647C"
+        draw.line((x, y(candle["high"]), x, y(candle["low"])), fill=color, width=2)
+        y1, y2 = sorted((y(candle["open"]), y(candle["close"])))
+        if y2 - y1 < 3:
+            y2 = y1 + 3
+        draw.rectangle((x - body_w // 2, y1, x + body_w // 2, y2), fill=color)
+        if candle["time"] in marks:
+            draw.text((max(left, x - 35), max(top, y(candle["high"]) - 25)),
+                      marks[candle["time"]], fill="#FFE082")
+
+    for level in levels or []:
+        price = float(level["price"])
+        if lo <= price <= hi:
+            yy = y(price)
+            color = level.get("color", "#65B8FF")
+            draw.line((left, yy, right, yy), fill=color, width=2)
+            draw.text((right - 190, max(top, yy - 18)),
+                      f'{level["label"]}: {price:g}', fill=color)
+
+    draw.rectangle((left, top, right, bottom), outline="#52616B", width=2)
+    draw.text((left, 585), "Older candles  <--- time --->  Newer candles", fill="#AAB7C4")
+    output = BytesIO()
+    image.save(output, format="PNG")
+    output.seek(0)
+    return output
+
+
+def telegram_chart(data, title, candle_marks=None, levels=None, zones=None, caption=None):
+    if not TOKEN or not CHAT_ID:
+        return False
+    try:
+        photo = chart_image(data, title, candle_marks, levels, zones)
+        if photo is None:
+            return False
+        response = SESSION.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
+            data={"chat_id": CHAT_ID, "caption": (caption or title)[:900]},
+            files={"photo": ("crt_signal.png", photo, "image/png")},
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not payload.get("ok"):
+            raise RuntimeError(str(payload))
+        return True
+    except Exception as exc:
+        log.error("Telegram chart send failed: %s", exc)
         return False
 
 
@@ -265,14 +352,18 @@ def find_latest_crt_setup(h4):
         buy_sweep = second["low"] < crt["low"] and second["close"] > crt["low"] and second["close"] <= crt["high"]
         if not (sell_sweep or buy_sweep):
             continue
-        hits = key_level_match(crt, second, key_zones(h4[:i+2], h4[i-1] if i > 0 else None))
+        zones = key_zones(h4[:i+2], h4[i-1] if i > 0 else None)
+        hits = key_level_match(crt, second, zones)
         if not hits:
             continue
+        matched_zones = [{"label": name, "low": lo, "high": hi} for name, lo, hi in zones
+                         if name in hits and (overlap(crt["low"], crt["high"], lo, hi)
+                                              or overlap(second["low"], second["high"], lo, hi))]
         return {
             "side": "SELL" if sell_sweep else "BUY", "crt": crt, "second": second,
             "mid": (crt["high"] + crt["low"]) / 2,
             "entry_target": crt["low"] if sell_sweep else crt["high"],
-            "key_hits": hits, "id": f"{crt['time']}:{'S' if sell_sweep else 'B'}",
+            "key_hits": hits, "matched_zones": matched_zones, "id": f"{crt['time']}:{'S' if sell_sweep else 'B'}",
         }
     return None
 
@@ -330,8 +421,17 @@ def scan_symbol(symbol, h4, m15, h4_map):
         STATE["setups"][symbol] = {"id": setup["id"], "side": setup["side"], "stage": "waiting_tbs",
                                    "mid": setup["mid"], "target": setup["entry_target"],
                                    "crt_high": setup["crt"]["high"], "crt_low": setup["crt"]["low"],
-                                   "key_hits": setup["key_hits"], "last_price": None}
+                                   "key_hits": setup["key_hits"], "key_zones": setup["matched_zones"],
+                                   "crt_time": setup["crt"]["time"], "second_time": setup["second"]["time"],
+                                   "last_price": None}
         telegram(f"🟡 4H CRT SETUP — {symbol}\nSide: {setup['side']}\nCRT High: {setup['crt']['high']}\nCRT Low: {setup['crt']['low']}\nKey level: {', '.join(setup['key_hits'])}\nWaiting for 15M Turtle Body Soup.")
+        telegram_chart(h4, f"{symbol} | 4H CRT SETUP",
+                       candle_marks=[{"time": setup["crt"]["time"], "label": "CRT"},
+                                     {"time": setup["second"]["time"], "label": "SWEEP"}],
+                       levels=[{"label": "CRT 50%", "price": setup["mid"]},
+                               {"label": "Opposite CRT boundary", "price": setup["entry_target"]}],
+                       zones=setup["matched_zones"],
+                       caption=f"{symbol} 4H CRT: CRT candle, sweep candle, key zone and levels")
     elif not previous:
         STATE["setups"][symbol] = {"id": setup["id"], "side": setup["side"], "stage": "waiting_tbs",
                                    "mid": setup["mid"], "target": setup["entry_target"],
@@ -348,6 +448,12 @@ def scan_symbol(symbol, h4, m15, h4_map):
                 state.update({"stage": "waiting_model1_break", "model1_high": candle["high"],
                               "model1_low": candle["low"], "tbs_time": candle["time"]})
                 telegram(f"🔵 15M TURTLE BODY SOUP — {symbol} {side}\nSwing level: {level}\nModel #1 High: {candle['high']}\nModel #1 Low: {candle['low']}\nWaiting for next 15M candle CLOSE beyond Model #1.")
+                telegram_chart(m15, f"{symbol} | 15M TURTLE BODY SOUP",
+                               candle_marks=[{"time": candle["time"], "label": "TBS / MODEL #1"}],
+                               levels=[{"label": "Swing level", "price": level},
+                                       {"label": "Model #1 High", "price": candle["high"]},
+                                       {"label": "Model #1 Low", "price": candle["low"]}],
+                               caption=f"{symbol} 15M TBS: Model #1 candle and swing level")
                 break
     if state["stage"] == "waiting_model1_break" and m15:
         last = m15[-1]
@@ -357,6 +463,14 @@ def scan_symbol(symbol, h4, m15, h4_map):
                 state["stage"] = "entry_alerted"
                 smt = smt_status(symbol, state["side"], h4_map)
                 telegram(f"🚨 MODEL #1 ENTRY CONFIRMED — {symbol} {state['side']}\n15M close: {last['close']}\nModel #1 range: {state['model1_low']} – {state['model1_high']}\nSMT: {smt}\nAlert only: place/manage trades manually.")
+                telegram_chart(m15, f"{symbol} | 15M MODEL #1 ENTRY",
+                               candle_marks=[{"time": state["tbs_time"], "label": "MODEL #1"},
+                                             {"time": last["time"], "label": "ENTRY CLOSE"}],
+                               levels=[{"label": "Model #1 High", "price": state["model1_high"]},
+                                       {"label": "Model #1 Low", "price": state["model1_low"]},
+                                       {"label": "CRT 50%", "price": state["mid"]},
+                                       {"label": "CRT target", "price": state["target"]}],
+                               caption=f"{symbol} {state['side']} 15M entry confirmation")
     if m15 and state.get("stage") in ("entry_alerted", "waiting_model1_break"):
         price = m15[-1]["close"]
         old = state.get("last_price")
