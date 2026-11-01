@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from PIL import Image, ImageDraw
 from io import BytesIO
 
@@ -14,6 +14,8 @@ app = Flask(__name__)
 BASE = "https://api.india.delta.exchange"
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+APP_BASE_URL = os.getenv("APP_BASE_URL", "").strip().rstrip("/")
+LIVE_LINK_INTERVAL = 15 * 60
 SYMBOLS = [s.strip().upper() for s in os.getenv("SYMBOLS", "BTCUSD,ETHUSD,XRPUSD").split(",") if s.strip()]
 POLL = max(30, int(os.getenv("POLL_SECONDS", "60")))
 STATE_PATH = Path(os.getenv("STATE_FILE", "/tmp/crt_state.json"))
@@ -181,7 +183,25 @@ def handle_command(message):
         reply = ("/start — Welcome message\n"
                  "/status — Bot health and monitored symbols\n"
                  "/signals — Current setup stages\n"
+                 "/chart BTCUSD [4h|15m] — Open live chart\n"
+                 "/chart — Links for all symbols\n"
                  "/help — Show this help")
+    elif command == "/chart":
+        parts = text_value.split()
+        symbol = parts[1].upper() if len(parts) > 1 else ""
+        timeframe = parts[2].lower() if len(parts) > 2 else "4h"
+        if timeframe not in ("4h", "15m"):
+            reply = "Timeframe must be 4h or 15m. Example: /chart BTCUSD 15m"
+        elif symbol and symbol not in SYMBOLS:
+            reply = f"Unknown symbol. Available: {', '.join(SYMBOLS)}"
+        elif not APP_BASE_URL:
+            reply = "Live chart link is not configured yet. Set APP_BASE_URL in Koyeb to your service's public URL."
+        elif symbol:
+            reply = f"📈 {symbol} {timeframe.upper()} live chart:\\n{APP_BASE_URL}/chart/{symbol}?tf={timeframe}"
+        else:
+            reply = "📊 Your separate live charts:\\n" + "\\n".join(
+                f"{sym}: {APP_BASE_URL}/chart/{sym}?tf=4h" for sym in SYMBOLS
+            )
     elif command == "/status":
         last_cycle = STATE.get("last_cycle") or "Not completed yet"
         errors = STATE.get("errors") or []
@@ -228,7 +248,7 @@ def command_listener():
             time.sleep(5)
 
 
-def candles(symbol, resolution, count=240):
+def candles(symbol, resolution, count=240, include_forming=False):
     seconds = 4 * 3600 if resolution == "4h" else 15 * 60
     end = int(time.time())
     start = end - seconds * count
@@ -254,7 +274,7 @@ def candles(symbol, resolution, count=240):
             continue
     parsed.sort(key=lambda c: c["time"])
     # Never use the currently forming candle.
-    return [c for c in parsed if c["time"] + seconds <= end]
+    return parsed if include_forming else [c for c in parsed if c["time"] + seconds <= end]
 
 
 def body(c):
@@ -644,6 +664,85 @@ def worker():
             STATE["errors"] = [str(exc)[:300]]
             save_state()
         time.sleep(POLL)
+
+
+
+@app.get("/api/chart/<symbol>")
+def chart_data(symbol):
+    symbol = symbol.upper()
+    timeframe = request.args.get("tf", "4h").lower()
+    if symbol not in SYMBOLS:
+        return jsonify({"error": "Unknown symbol"}), 404
+    if timeframe not in ("4h", "15m"):
+        return jsonify({"error": "Timeframe must be 4h or 15m"}), 400
+    try:
+        data = candles(symbol, timeframe, 120, include_forming=True)
+        setup = STATE.get("setups", {}).get(symbol, {})
+        lines = []
+        if setup.get("crt_high") is not None:
+            lines = [
+                {"price": setup["crt_high"], "title": "CRT High", "color": "#e6a23c"},
+                {"price": setup["mid"], "title": "CRT 50%", "color": "#409eff"},
+                {"price": setup["crt_low"], "title": "CRT Low", "color": "#e6a23c"}
+            ]
+        return jsonify({
+            "symbol": symbol, "timeframe": timeframe,
+            "candles": [{"time": c["time"], "open": c["open"], "high": c["high"],
+                         "low": c["low"], "close": c["close"]} for c in data],
+            "lines": lines, "stage": setup.get("stage", "no active setup"),
+            "updated": datetime.now(timezone.utc).isoformat()
+        })
+    except Exception as exc:
+        log.exception("Live chart data failed")
+        return jsonify({"error": str(exc)[:200]}), 502
+
+
+@app.get("/chart/<symbol>")
+def live_chart(symbol):
+    symbol = symbol.upper()
+    if symbol not in SYMBOLS:
+        return jsonify({"error": "Unknown symbol", "available": SYMBOLS}), 404
+    page = r"""<!doctype html>
+<html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CRT Live Chart</title>
+<script src="https://unpkg.com/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+body{margin:0;background:#101820;color:#e8edf2;font:14px Arial}
+header{padding:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+select{background:#263746;color:white;border:1px solid #52616b;padding:8px;border-radius:6px}
+#chart{height:78vh;min-height:420px;width:100%}
+#meta{padding:8px 12px;color:#aab7c4}
+</style></head><body>
+<header><b>SYMBOL_PLACEHOLDER</b><select id="tf"><option value="4h">4H</option><option value="15m">15M</option></select><span id="stage"></span></header>
+<div id="chart"></div><div id="meta">Connecting to Delta Exchange…</div>
+<script>
+const symbol="SYMBOL_PLACEHOLDER";
+const params=new URLSearchParams(location.search);const tf=document.getElementById('tf');
+tf.value=params.get('tf')||'4h';
+const chart=LightweightCharts.createChart(document.getElementById('chart'),{
+ layout:{background:{color:'#101820'},textColor:'#d1d4dc'},
+ grid:{vertLines:{color:'#263746'},horzLines:{color:'#263746'}},
+ rightPriceScale:{borderColor:'#52616b'},timeScale:{borderColor:'#52616b',timeVisible:true,secondsVisible:false},
+ crosshair:{mode:LightweightCharts.CrosshairMode.Normal}
+});
+const candles=chart.addCandlestickSeries({upColor:'#20c997',downColor:'#ff647c',borderUpColor:'#20c997',borderDownColor:'#ff647c',wickUpColor:'#20c997',wickDownColor:'#ff647c'});
+let lines=[];
+async function refresh(){
+ try{
+  const res=await fetch('/api/chart/'+symbol+'?tf='+tf.value,{cache:'no-store'});
+  const d=await res.json();if(!res.ok)throw new Error(d.error||'Chart data error');
+  candles.setData(d.candles);
+  lines.forEach(x=>candles.removePriceLine(x));lines=[];
+  (d.lines||[]).forEach(x=>lines.push(candles.createPriceLine({price:x.price,color:x.color,lineWidth:2,lineStyle:2,axisLabelVisible:true,title:x.title})));
+  document.getElementById('stage').textContent='CRT: '+d.stage;
+  document.getElementById('meta').textContent='Delta Exchange · Updated '+new Date(d.updated).toLocaleTimeString()+' · Auto-refresh 15 sec';
+ }catch(e){document.getElementById('meta').textContent='Update error: '+e.message}
+}
+tf.addEventListener('change',()=>{const u=new URL(location.href);u.searchParams.set('tf',tf.value);history.replaceState({},'',u);refresh()});
+new ResizeObserver(entries=>chart.applyOptions({width:entries[0].contentRect.width})).observe(document.getElementById('chart'));
+refresh();setInterval(refresh,15000);
+</script></body></html>"""
+    return page.replace("SYMBOL_PLACEHOLDER", symbol)
 
 
 @app.get("/")
