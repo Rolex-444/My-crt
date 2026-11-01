@@ -60,6 +60,87 @@ def telegram(message):
         return False
 
 
+def telegram_command_reply(chat_id, message):
+    if not TOKEN:
+        return
+    try:
+        r = SESSION.post(
+            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+            json={"chat_id": chat_id, "text": message, "disable_web_page_preview": True},
+            timeout=15,
+        )
+        r.raise_for_status()
+    except Exception as exc:
+        log.error("Telegram command reply failed: %s", exc)
+
+
+def handle_command(message):
+    chat = message.get("chat", {})
+    chat_id = str(chat.get("id", ""))
+    # Only accept commands from the configured destination chat.
+    if not chat_id or chat_id != CHAT_ID:
+        return
+    text_value = (message.get("text") or "").strip()
+    if not text_value.startswith("/"):
+        return
+    command = text_value.split()[0].split("@")[0].lower()
+
+    if command == "/start":
+        reply = ("Welcome to your CRT alert bot!\\n\\n"
+                 "I monitor Delta Exchange futures and send CRT / Model #1 alerts.\\n"
+                 "Alert-only mode: no orders are placed.\\n\\n"
+                 "Use /status, /signals, or /help.")
+    elif command == "/help":
+        reply = ("/start — Welcome message\\n"
+                 "/status — Bot health and monitored symbols\\n"
+                 "/signals — Current setup stages\\n"
+                 "/help — Show this help")
+    elif command == "/status":
+        last_cycle = STATE.get("last_cycle") or "Not completed yet"
+        errors = STATE.get("errors") or []
+        reply = ("CRT bot status: RUNNING\\n"
+                 f"Symbols: {', '.join(SYMBOLS)}\\n"
+                 f"Scan interval: {POLL} seconds\\n"
+                 f"Last scan (UTC): {last_cycle}\\n"
+                 f"Last scan errors: {'; '.join(errors) if errors else 'None'}\\n"
+                 "Mode: alerts only; no automatic trading.")
+    elif command == "/signals":
+        setups = STATE.get("setups", {})
+        active = []
+        for symbol, item in setups.items():
+            stage = item.get("stage", "unknown")
+            if stage != "completed":
+                active.append(f"{symbol}: {item.get('side', '?')} — {stage}")
+        reply = "Current CRT setups:\\n" + ("\\n".join(active) if active else "No active setups currently.")
+    else:
+        return
+    telegram_command_reply(chat_id, reply)
+
+
+def command_listener():
+    if not TOKEN or not CHAT_ID:
+        log.warning("Telegram command listener disabled: token or chat ID missing")
+        return
+    offset = None
+    while True:
+        try:
+            params = {"timeout": 10, "allowed_updates": json.dumps(["message"])}
+            if offset is not None:
+                params["offset"] = offset
+            r = SESSION.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates", params=params, timeout=15)
+            r.raise_for_status()
+            payload = r.json()
+            if not payload.get("ok"):
+                raise RuntimeError(str(payload))
+            for update in payload.get("result", []):
+                offset = update["update_id"] + 1
+                if "message" in update:
+                    handle_command(update["message"])
+        except Exception as exc:
+            log.error("Telegram command polling failed: %s", exc)
+            time.sleep(5)
+
+
 def candles(symbol, resolution, count=240):
     seconds = 4 * 3600 if resolution == "4h" else 15 * 60
     end = int(time.time())
@@ -337,6 +418,8 @@ def start_worker():
     if os.getenv("DISABLE_WORKER", "0") != "1":
         t = threading.Thread(target=worker, daemon=True, name="market-scanner")
         t.start()
+        commands = threading.Thread(target=command_listener, daemon=True, name="telegram-commands")
+        commands.start()
 
 
 start_worker()
