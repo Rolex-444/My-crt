@@ -411,40 +411,168 @@ def price_crossed(old_price, new_price, target, side):
     return old_price < target <= new_price
 
 
+def largest_body_crt_candidate(h4):
+    """
+    Select only the newest completed 4H candle when its body is the largest
+    among the latest 30 completed candles and satisfies the CRT body rule.
+    This prevents repeatedly discovering an old historical candle.
+    """
+    if len(h4) < 30:
+        return None
+    recent = h4[-30:]
+    candidate = recent[-1]
+    largest_body = max(body(c) for c in recent)
+    if body(candidate) < largest_body:
+        return None
+    if body(candidate) <= upper_wick(candidate) + lower_wick(candidate):
+        return None
+    return candidate
+
+
 def scan_symbol(symbol, h4, m15, h4_map):
-    setup = find_latest_crt_setup(h4)
-    if not setup:
-        return
-    setup_key = f"{symbol}:{setup['id']}"
-    previous = STATE["setups"].get(symbol)
-    if previous and previous.get("id") != setup["id"]:
-        STATE["setups"][symbol] = {"id": setup["id"], "side": setup["side"], "stage": "waiting_tbs",
-                                   "mid": setup["mid"], "target": setup["entry_target"],
-                                   "crt_high": setup["crt"]["high"], "crt_low": setup["crt"]["low"],
-                                   "key_hits": setup["key_hits"], "key_zones": setup["matched_zones"],
-                                   "crt_time": setup["crt"]["time"], "second_time": setup["second"]["time"],
-                                   "last_price": None}
-        telegram(f"🟡 4H CRT SETUP — {symbol}\nSide: {setup['side']}\nCRT High: {setup['crt']['high']}\nCRT Low: {setup['crt']['low']}\nKey level: {', '.join(setup['key_hits'])}\nWaiting for 15M Turtle Body Soup.")
-        telegram_chart(h4, f"{symbol} | 4H CRT SETUP",
-                       candle_marks=[{"time": setup["crt"]["time"], "label": "CRT"},
-                                     {"time": setup["second"]["time"], "label": "SWEEP"}],
-                       levels=[{"label": "CRT 50%", "price": setup["mid"]},
-                               {"label": "Opposite CRT boundary", "price": setup["entry_target"]}],
-                       zones=setup["matched_zones"],
-                       caption=f"{symbol} 4H CRT: CRT candle, sweep candle, key zone and levels")
-    elif not previous:
-        STATE["setups"][symbol] = {"id": setup["id"], "side": setup["side"], "stage": "waiting_tbs",
-                                   "mid": setup["mid"], "target": setup["entry_target"],
-                                   "crt_high": setup["crt"]["high"], "crt_low": setup["crt"]["low"],
-                                   "key_hits": setup["key_hits"], "last_price": None}
-        telegram(f"🟡 4H CRT SETUP — {symbol}\nSide: {setup['side']}\nCRT High: {setup['crt']['high']}\nCRT Low: {setup['crt']['low']}\nKey level: {', '.join(setup['key_hits'])}\nWaiting for 15M Turtle Body Soup.")
     state = STATE["setups"].get(symbol)
-    if not state or state["id"] != setup["id"]:
+
+    # Stage 1: identify a new, exceptionally large CRT candle.
+    candidate = largest_body_crt_candidate(h4)
+    if candidate:
+        candidate_id = f"{candidate['time']}:PENDING"
+        if not state or state.get("crt_time") != candidate["time"]:
+            old_candle = h4[-2] if len(h4) >= 2 else None
+            zones = key_zones(h4[:-1], old_candle)
+            crt_hits = sorted(set(
+                name for name, lo, hi in zones
+                if overlap(candidate["low"], candidate["high"], lo, hi)
+            ))
+            crt_zones = [{"label": name, "low": lo, "high": hi}
+                         for name, lo, hi in zones
+                         if name in crt_hits and overlap(candidate["low"], candidate["high"], lo, hi)]
+            state = {
+                "id": candidate_id, "stage": "waiting_second",
+                "crt_time": candidate["time"], "crt_high": candidate["high"],
+                "crt_low": candidate["low"], "crt_open": candidate["open"],
+                "crt_close": candidate["close"], "crt_body": body(candidate),
+                "mid": (candidate["high"] + candidate["low"]) / 2,
+                "key_hits": crt_hits, "key_zones": crt_zones,
+                "crt_key_alerted": bool(crt_hits), "last_price": None
+            }
+            STATE["setups"][symbol] = state
+            telegram(
+                f"🟡 BIG CRT CANDLE FOUND — {symbol}\n"
+                f"Time (UTC): {datetime.fromtimestamp(candidate['time'], timezone.utc).strftime('%Y-%m-%d %H:%M')}\n"
+                f"Body: {body(candidate):g} (largest among latest 30 completed 4H candles)\n"
+                f"CRT High: {candidate['high']:g}\nCRT Low: {candidate['low']:g}\n"
+                f"CRT 50%: {state['mid']:g}\n"
+                f"Key level touched by CRT: {', '.join(crt_hits) if crt_hits else 'Not yet'}\n"
+                "Waiting for the next completed 4H candle to sweep and close back inside."
+            )
+            telegram_chart(
+                h4, f"{symbol} | BIG 4H CRT CANDLE FOUND",
+                candle_marks=[{"time": candidate["time"], "label": "BIG CRT"}],
+                levels=[{"label": "CRT High", "price": candidate["high"]},
+                        {"label": "CRT 50%", "price": state["mid"]},
+                        {"label": "CRT Low", "price": candidate["low"]}],
+                zones=crt_zones,
+                caption=f"{symbol}: largest-body CRT candidate in latest 30 completed 4H candles"
+            )
+            if crt_hits:
+                telegram(
+                    f"🟠 KEY LEVEL TOUCHED BY CRT CANDLE — {symbol}\n"
+                    f"Levels: {', '.join(crt_hits)}\n"
+                    "The CRT candle itself overlapped the marked key-level zone."
+                )
+                telegram_chart(
+                    h4, f"{symbol} | CRT CANDLE KEY-LEVEL TOUCH",
+                    candle_marks=[{"time": candidate["time"], "label": "CRT + KEY TOUCH"}],
+                    levels=[{"label": "CRT 50%", "price": state["mid"]}],
+                    zones=crt_zones,
+                    caption=f"{symbol}: key level touched by the CRT candle"
+                )
+
+    state = STATE["setups"].get(symbol)
+    if not state:
         return
 
-    if state["stage"] == "waiting_tbs":
+    # Stage 2: evaluate only the immediate next completed 4H candle.
+    if state.get("stage") == "waiting_second":
+        crt_index = next((i for i, c in enumerate(h4) if c["time"] == state["crt_time"]), None)
+        if crt_index is not None and len(h4) > crt_index + 1:
+            crt = h4[crt_index]
+            second = h4[crt_index + 1]
+            sell_sweep = (second["high"] > crt["high"] and
+                          second["close"] < crt["high"] and
+                          second["close"] >= crt["low"])
+            buy_sweep = (second["low"] < crt["low"] and
+                         second["close"] > crt["low"] and
+                         second["close"] <= crt["high"])
+            if not (sell_sweep or buy_sweep):
+                state["stage"] = "invalidated"
+                telegram(
+                    f"⚪ CRT CANDIDATE INVALIDATED — {symbol}\n"
+                    "The immediate next 4H candle did not sweep the CRT boundary and close back inside."
+                )
+                return
+
+            side = "SELL" if sell_sweep else "BUY"
+            state["side"] = side
+            state["second_time"] = second["time"]
+            state["target"] = crt["low"] if sell_sweep else crt["high"]
+            state["entry_target"] = state["target"]
+            zones = key_zones(h4[:crt_index + 2], h4[crt_index - 1] if crt_index > 0 else None)
+            second_hits = sorted(set(
+                name for name, lo, hi in zones
+                if overlap(second["low"], second["high"], lo, hi)
+            ))
+            second_zones = [{"label": name, "low": lo, "high": hi}
+                            for name, lo, hi in zones
+                            if name in second_hits and overlap(second["low"], second["high"], lo, hi)]
+            state["key_hits"] = sorted(set(state.get("key_hits", []) + second_hits))
+            state["key_zones"] = state.get("key_zones", []) + [
+                z for z in second_zones
+                if not any(old["label"] == z["label"] and old["low"] == z["low"] and old["high"] == z["high"]
+                           for old in state.get("key_zones", []))
+            ]
+            state["stage"] = "waiting_tbs" if state["key_hits"] else "sweep_confirmed_waiting_key"
+            telegram(
+                f"🔵 SECOND CANDLE SWEEP CONFIRMED — {symbol} {side}\n"
+                f"CRT High: {crt['high']:g} | CRT Low: {crt['low']:g}\n"
+                f"Second candle High: {second['high']:g} | Low: {second['low']:g}\n"
+                f"Second candle Close: {second['close']:g} (inside CRT range)\n"
+                f"Key level touched by second candle: {', '.join(second_hits) if second_hits else 'No'}\n"
+                f"Key level touched by CRT candle: {', '.join(state['key_hits']) if state['key_hits'] else 'No'}"
+            )
+            telegram_chart(
+                h4, f"{symbol} | 4H SECOND-CANDLE SWEEP CONFIRMED",
+                candle_marks=[{"time": crt["time"], "label": "BIG CRT"},
+                              {"time": second["time"], "label": "SWEEP + CLOSE IN"}],
+                levels=[{"label": "CRT High", "price": crt["high"]},
+                        {"label": "CRT 50%", "price": state["mid"]},
+                        {"label": "CRT Low", "price": crt["low"]}],
+                zones=state.get("key_zones", []),
+                caption=f"{symbol} {side}: second 4H candle swept CRT and closed inside"
+            )
+            if second_hits:
+                telegram(
+                    f"🟠 KEY LEVEL TOUCHED BY SECOND CANDLE — {symbol} {side}\n"
+                    f"Levels: {', '.join(second_hits)}\n"
+                    "Second candle overlapped the marked key-level zone."
+                )
+                telegram_chart(
+                    h4, f"{symbol} | SECOND CANDLE KEY-LEVEL TOUCH",
+                    candle_marks=[{"time": crt["time"], "label": "BIG CRT"},
+                                  {"time": second["time"], "label": "SWEEP + KEY TOUCH"}],
+                    levels=[{"label": "CRT 50%", "price": state["mid"]}],
+                    zones=state.get("key_zones", []),
+                    caption=f"{symbol}: second candle touched key level(s): {', '.join(second_hits)}"
+                )
+
+    # Only continue to 15M Model #1 after the sweep is confirmed and at least
+    # one of the CRT/second candles has touched a recognized 4H key level.
+    if state.get("stage") == "sweep_confirmed_waiting_key":
+        return
+
+    if state.get("stage") == "waiting_tbs":
         for idx, side, level, candle in tbs_events(m15):
-            if side == state["side"] and candle["time"] > setup["second"]["time"]:
+            if side == state["side"] and candle["time"] > state["second_time"]:
                 state.update({"stage": "waiting_model1_break", "model1_high": candle["high"],
                               "model1_low": candle["low"], "tbs_time": candle["time"]})
                 telegram(f"🔵 15M TURTLE BODY SOUP — {symbol} {side}\nSwing level: {level}\nModel #1 High: {candle['high']}\nModel #1 Low: {candle['low']}\nWaiting for next 15M candle CLOSE beyond Model #1.")
