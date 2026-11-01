@@ -434,7 +434,8 @@ def scan_symbol(symbol, h4, m15, h4_map):
 
     # Stage 1: identify a new, exceptionally large CRT candle.
     candidate = largest_body_crt_candidate(h4)
-    if candidate:
+    can_start_new = (not state) or state.get("stage") in ("invalidated", "completed")
+    if candidate and can_start_new:
         candidate_id = f"{candidate['time']}:PENDING"
         if not state or state.get("crt_time") != candidate["time"]:
             old_candle = h4[-2] if len(h4) >= 2 else None
@@ -531,7 +532,7 @@ def scan_symbol(symbol, h4, m15, h4_map):
                 if not any(old["label"] == z["label"] and old["low"] == z["low"] and old["high"] == z["high"]
                            for old in state.get("key_zones", []))
             ]
-            state["stage"] = "waiting_tbs" if state["key_hits"] else "sweep_confirmed_waiting_key"
+            state["stage"] = "waiting_tbs" if state["key_hits"] else "invalidated"
             telegram(
                 f"🔵 SECOND CANDLE SWEEP CONFIRMED — {symbol} {side}\n"
                 f"CRT High: {crt['high']:g} | CRT Low: {crt['low']:g}\n"
@@ -565,9 +566,8 @@ def scan_symbol(symbol, h4, m15, h4_map):
                     caption=f"{symbol}: second candle touched key level(s): {', '.join(second_hits)}"
                 )
 
-    # Only continue to 15M Model #1 after the sweep is confirmed and at least
-    # one of the CRT/second candles has touched a recognized 4H key level.
-    if state.get("stage") == "sweep_confirmed_waiting_key":
+    # Continue to 15M Model #1 only when sweep and key-level conditions are met.
+    if state.get("stage") in ("invalidated", "completed"):
         return
 
     if state.get("stage") == "waiting_tbs":
