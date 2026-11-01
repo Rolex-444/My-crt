@@ -117,12 +117,11 @@ def pivots(data, left=2, right=2):
     return out
 
 
-def key_zones(data):
+def key_zones(data, old_candle=None):
     zones = []
-    # Previous completed 4H candle levels: both old high and old low.
-    if len(data) >= 2:
-        prev = data[-2]
-        zones += [("Old High", prev["high"], prev["high"]), ("Old Low", prev["low"], prev["low"])]
+    # Old High/Low are taken from the 4H candle immediately before the CRT candle.
+    if old_candle is not None:
+        zones += [("Old High", old_candle["high"], old_candle["high"]), ("Old Low", old_candle["low"], old_candle["low"])]
 
     # Standard three-candle FVGs and their inverse after a later close through the zone.
     fvg_list = []
@@ -185,7 +184,7 @@ def find_latest_crt_setup(h4):
         buy_sweep = second["low"] < crt["low"] and second["close"] > crt["low"] and second["close"] <= crt["high"]
         if not (sell_sweep or buy_sweep):
             continue
-        hits = key_level_match(crt, second, key_zones(h4[:i+2]))
+        hits = key_level_match(crt, second, key_zones(h4[:i+2], h4[i-1] if i > 0 else None))
         if not hits:
             continue
         return {
