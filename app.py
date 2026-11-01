@@ -149,18 +149,27 @@ def telegram_chart(data, title, candle_marks=None, levels=None, zones=None, capt
         return False
 
 
-def telegram_command_reply(chat_id, message):
+def telegram_command_reply(chat_id, message, reply_markup=None):
     if not TOKEN:
         return
     try:
-        r = SESSION.post(
-            f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-            json={"chat_id": chat_id, "text": message, "disable_web_page_preview": True},
-            timeout=15,
-        )
+        payload = {"chat_id": chat_id, "text": message, "disable_web_page_preview": True}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        r = SESSION.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json=payload, timeout=15)
         r.raise_for_status()
+        result = r.json()
+        if not result.get("ok"):
+            raise RuntimeError(str(result))
     except Exception as exc:
         log.error("Telegram command reply failed: %s", exc)
+
+def telegram_menu():
+    return {"inline_keyboard": [
+        [{"text": "📊 LIVE CHARTS", "callback_data": "/chart"}, {"text": "🎯 SIGNALS", "callback_data": "/signals"}],
+        [{"text": "🟢 BOT STATUS", "callback_data": "/status"}, {"text": "📖 HELP", "callback_data": "/help"}],
+        [{"text": "₿ BTCUSD", "callback_data": "/chart BTCUSD"}, {"text": "Ξ ETHUSD", "callback_data": "/chart ETHUSD"}, {"text": "✕ XRPUSD", "callback_data": "/chart XRPUSD"}]
+    ]}
 
 
 def handle_command(message):
@@ -174,11 +183,15 @@ def handle_command(message):
         return
     command = text_value.split()[0].split("@")[0].lower()
 
-    if command == "/start":
-        reply = ("Welcome to your CRT alert bot!\n\n"
-                 "I monitor Delta Exchange futures and send CRT / Model #1 alerts.\n"
-                 "Alert-only mode: no orders are placed.\n\n"
-                 "Use /status, /signals, or /help.")
+    if command in ("/start", "/menu"):
+        reply = ("◆ CRT TERMINAL  /  DELTA FUTURES ◆\n"
+                 "━━━━━━━━━━━━━━━━━━━━\n"
+                 "Your market command center is online.\n\n"
+                 "◉ WATCHLIST  BTCUSD · ETHUSD · XRPUSD\n"
+                 "◉ TIMEFRAMES  4H HTF  /  15M LTF\n"
+                 "◉ ENGINE  Live market scan\n"
+                 "◉ EXECUTION  Alert-only · Manual trading\n\n"
+                 "Choose a workspace below.")
     elif command == "/help":
         reply = ("/start — Welcome message\n"
                  "/status — Bot health and monitored symbols\n"
@@ -221,7 +234,7 @@ def handle_command(message):
         reply = "Current CRT setups:\n" + ("\n".join(active) if active else "No active setups currently.")
     else:
         return
-    telegram_command_reply(chat_id, reply)
+    telegram_command_reply(chat_id, reply, telegram_menu())
 
 
 def command_listener():
@@ -231,7 +244,7 @@ def command_listener():
     offset = None
     while True:
         try:
-            params = {"timeout": 10, "allowed_updates": json.dumps(["message"])}
+            params = {"timeout": 10, "allowed_updates": json.dumps(["message", "callback_query"])}
             if offset is not None:
                 params["offset"] = offset
             r = SESSION.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates", params=params, timeout=15)
@@ -243,6 +256,16 @@ def command_listener():
                 offset = update["update_id"] + 1
                 if "message" in update:
                     handle_command(update["message"])
+                elif "callback_query" in update:
+                    query = update["callback_query"]
+                    try:
+                        SESSION.post(f"https://api.telegram.org/bot{TOKEN}/answerCallbackQuery",
+                                     json={"callback_query_id": query["id"]}, timeout=10)
+                    except Exception as exc:
+                        log.warning("Callback acknowledgement failed: %s", exc)
+                    callback_message = dict(query.get("message", {}))
+                    callback_message["text"] = query.get("data", "")
+                    handle_command(callback_message)
         except Exception as exc:
             log.error("Telegram command polling failed: %s", exc)
             time.sleep(5)
